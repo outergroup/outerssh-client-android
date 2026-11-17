@@ -3,7 +3,9 @@
 A small Android app that browses a server's web apps over SSH, built on
 [OuterSSH](https://github.com/outergroup/OuterSSH). It connects to one server,
 runs OuterSSH's HTTP proxy, points a WebView at it, and opens the server's
-homepage, or [Outer Shell](https://outershell.org) when no homepage is configured.
+[homepage](https://github.com/outergroup/OuterSSH/blob/main/OuterSSH/README.md#server-defined-homepage).
+Installing [Outer Shell](https://outershell.org) on a server makes it that
+server's homepage, on Linux, macOS, and Windows.
 Type a port number to open `localhost:<port>` on the server; tap Home to go back.
 
 Use it as a starting point for your own client.
@@ -19,17 +21,14 @@ whatever key the server presents and logs its fingerprint; copy it from Logcat
 
 ## Server-side helpers
 
-OuterSSH uploads a small helper to the server to reach Unix sockets such as Outer
-Shell's. The app bundles whatever is in `helpers/` (git-ignored) as uncompressed
-assets. Build the Linux helpers into it, which needs Docker:
+OuterSSH uploads a small helper to the server when it first needs one, such as to
+open a Unix socket like Outer Shell's. The build downloads signed helpers for Linux,
+macOS, and Windows servers from outerssh.org into `helpers/` (git-ignored), checks
+each against `helpers.sha256`, and bundles them as uncompressed assets.
 
-```sh
-OuterSSH/Scripts/build_outerssh_linux_helpers.sh helpers
-```
-
-The script is newer than the OuterSSH commit this repo pins; update the submodule
-if it's missing. Without the helpers, the app still opens ports on the server, but
-not Outer Shell, and logs which helper file was missing.
+To use helpers you build yourself (see `OuterSSH/Release/README.md`), put them in
+`helpers/` and their hashes in `helpers.sha256`; the build only downloads files
+whose hash doesn't match.
 
 ## Build and run
 
@@ -55,8 +54,7 @@ the first time it starts.
 - `OuterSSHClient.kt` is the Kotlin side of a small JNI layer, `app/src/main/cpp/client.c`.
   The C code creates OuterSSH's event queue and watches its eventfd on the main
   thread's looper, creates a session pool and an HTTP proxy, answers OuterSSH's
-  questions (uploading helpers straight from the APK), converts homepage URLs,
-  and finds Outer Shell.
+  questions (uploading helpers straight from the APK), and converts homepage URLs.
 - `MainActivity.kt` routes the WebView through the proxy with androidx.webkit's
   `ProxyController` and answers the proxy's authentication challenge with the
   credentials OuterSSH generated.
@@ -69,9 +67,6 @@ the first time it starts.
 
 ## Limitations
 
-- Opens Outer Shell only on Linux servers. The starter bundles only the Linux
-  helpers; macOS and Windows servers need their own helper builds for Outer
-  Shell's launchd socket or named pipe. Root-owned sockets need `sudo`, which
-  the starter declines.
-- Supports `http+unix` and `http://localhost` homepages only.
+- Root-owned sockets need `sudo`, which the starter declines.
+- Supports `http+unix`, `http+pipe` and `http://localhost` homepages only.
 - No saved settings, tabs or bookmarks: edit the code.

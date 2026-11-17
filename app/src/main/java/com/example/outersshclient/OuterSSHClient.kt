@@ -18,7 +18,7 @@ class OuterSSHClient(private val assets: AssetManager, private val listener: Lis
             Config.HOST_KEY_FINGERPRINT.toByteArray())
     }
 
-    /** Loads the server's homepage, or Outer Shell when none is configured. */
+    /** Loads the server's homepage. */
     fun home() {
         if (handle != 0L) home(handle)
     }

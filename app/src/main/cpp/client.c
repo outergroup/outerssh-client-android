@@ -13,15 +13,10 @@
 enum {
     TAG_PROXY_STARTED = 1,
     TAG_HOMEPAGE,
-    TAG_FIND_OUTER_SHELL,
     TAG_DESTROY,
 };
 
 enum { URL_CAPACITY = 4096 };
-
-static const char find_outer_shell[] =
-    "if [ \"$(id -u)\" = 0 ]; then d=/run; else d=\"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}\"; fi; "
-    "p=\"$d/org.outershell.OuterShell\"; [ -S \"$p\" ] && printf '%s' \"$p\"";
 
 typedef struct {
     JavaVM *vm;
@@ -92,16 +87,19 @@ static bool percent_decode(const char *text, size_t length, char *output, size_t
     return true;
 }
 
-/* Converts the http+unix and http://localhost homepages this starter supports
- * into URLs the OuterSSH proxy understands. */
+/* Converts the http+unix, http+pipe and http://localhost homepages this starter
+ * supports into URLs the OuterSSH proxy understands. */
 static bool convert_homepage(const char *url, size_t length, char *output, size_t capacity)
 {
-    static const char unix_scheme[] = "http+unix://", http_scheme[] = "http://";
-    bool socket;
+    static const char unix_scheme[] = "http+unix://", pipe_scheme[] = "http+pipe://", http_scheme[] = "http://";
+    bool socket, pipe = false;
     size_t start;
     if (length > strlen(unix_scheme) && !strncasecmp(url, unix_scheme, strlen(unix_scheme))) {
         socket = true;
         start = strlen(unix_scheme);
+    } else if (length > strlen(pipe_scheme) && !strncasecmp(url, pipe_scheme, strlen(pipe_scheme))) {
+        socket = pipe = true;
+        start = strlen(pipe_scheme);
     } else if (length > strlen(http_scheme) && !strncasecmp(url, http_scheme, strlen(http_scheme))) {
         socket = false;
         start = strlen(http_scheme);
@@ -124,8 +122,9 @@ static bool convert_homepage(const char *url, size_t length, char *output, size_
     if (socket) {
         char path[256];
         size_t path_length;
-        if (!percent_decode(authority, authority_length, path, sizeof(path), &path_length) ||
-            !outerssh_proxy_encode_unix_socket_host(path, path_length, host, sizeof(host), &host_length)) {
+        if (!percent_decode(authority, authority_length, path, sizeof(path), &path_length) || !(pipe
+                ? outerssh_proxy_encode_named_pipe_host(path, path_length, host, sizeof(host), &host_length)
+                : outerssh_proxy_encode_unix_socket_host(path, path_length, host, sizeof(host), &host_length))) {
             return false;
         }
     } else {
@@ -164,29 +163,8 @@ static void homepage_received(Client *client, const OuterSSHEvent *event)
                 (int)event->homepage_received.url_length, event->homepage_received.url);
             show(client, text);
         }
-    } else if (!outerssh_session_pool_execute_command(client->pool, find_outer_shell,
-                   sizeof(find_outer_shell) - 1, NULL, 0, TAG_FIND_OUTER_SHELL)) {
-        show(client, "Couldn't look for Outer Shell.");
-    }
-}
-
-static void outer_shell_found(Client *client, const OuterSSHEvent *event)
-{
-    static const char suffix[] = "/org.outershell.OuterShell";
-    const char *path = (const char *)event->command_completed.standard_output;
-    size_t length = event->command_completed.standard_output_length;
-    char host[OUTERSSH_PROXY_SOCKET_HOST_CAPACITY];
-    size_t host_length;
-    if (event->command_completed.error.domain != OUTERSSH_ERROR_NONE) {
-        show_error(client, "Couldn't look for Outer Shell: ", event->command_completed.error);
-    } else if (event->command_completed.exit_status == 0 && path && length > sizeof(suffix) - 1 && path[0] == '/' &&
-               !memcmp(path + length - (sizeof(suffix) - 1), suffix, sizeof(suffix) - 1) &&
-               outerssh_proxy_encode_unix_socket_host(path, length, host, sizeof(host), &host_length)) {
-        char url[URL_CAPACITY];
-        snprintf(url, sizeof(url), "http://%.*s/", (int)host_length, host);
-        load(client, url);
     } else {
-        show(client, "Outer Shell isn't running on this server.");
+        show(client, "This server has no homepage. Type a port to open one of its web servers.");
     }
 }
 
@@ -223,13 +201,15 @@ static void validate_host_key(Client *client, const OuterSSHEvent *event, bool p
     outerssh_session_pool_answer_host_key(client->pool, event->host_key_validation.question, !pinned);
 }
 
-/* Answers OuterSSH's request for its server-side helper with an asset built from
- * the repository's helpers/ folder. */
+/* Answers OuterSSH's request for its server-side helper with an asset made from
+ * the helpers the build downloaded. Windows helpers are tar archives. */
 static void provide_helper(Client *client, const OuterSSHEvent *event)
 {
+    const char *platform = event->helper_binary_needed.platform;
+    int length_of_platform = (int)event->helper_binary_needed.platform_length;
+    const char *extension = length_of_platform >= 8 && strncmp(platform, "windows-", 8) == 0 ? ".tar.gz" : ".gz";
     char name[128];
-    snprintf(name, sizeof(name), "outerssh-helper-%.*s.gz.bin",
-        (int)event->helper_binary_needed.platform_length, event->helper_binary_needed.platform);
+    snprintf(name, sizeof(name), "outerssh-helper-%.*s%s.bin", length_of_platform, platform, extension);
     AAsset *asset = AAssetManager_open(client->asset_manager, name, AASSET_MODE_UNKNOWN);
     off64_t start = 0, length = 0;
     int file = asset ? AAsset_openFileDescriptor64(asset, &start, &length) : -1;
@@ -281,9 +261,6 @@ static int drain_events(int fd, int events, void *data)
                 break;
             case OUTERSSH_EVENT_HOMEPAGE_RECEIVED:
                 homepage_received(client, event);
-                break;
-            case OUTERSSH_EVENT_COMMAND_COMPLETED:
-                outer_shell_found(client, event);
                 break;
             case OUTERSSH_EVENT_HOST_KEY_VALIDATION:
                 validate_host_key(client, event, client->pinned_fingerprint);
